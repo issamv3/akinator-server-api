@@ -14,27 +14,41 @@ export const sleep = (ms: number): Promise<void> => {
   return new Promise((resolve) => setTimeout(resolve, ms));
 };
 
-// Fungsi untuk reset timeout 5 menit
+const safeBrowserClose = async (
+  browser: ConnectResult['browser'],
+  sessionId: string
+) => {
+  try {
+    if (browser && !browser.isConnected()) {
+      console.log(`Browser for session ${sessionId} already disconnected`);
+      return;
+    }
+    await browser?.close();
+    console.log(`Browser for session ${sessionId} closed successfully`);
+  } catch (err) {
+    console.error(`Failed to close browser for session ${sessionId}:`, err);
+  }
+};
+
+const cleanupSession = async (id: string, reason: string = 'cleanup') => {
+  const session = gameMap.get(id);
+  if (!session) return;
+
+  clearTimeout(session.timeout);
+  await safeBrowserClose(session.browser, id);
+  gameMap.delete(id);
+  console.log(`Session ${id} cleaned up due to ${reason}`);
+};
+
 const setAutoCleanup = (id: string) => {
   const session = gameMap.get(id);
   if (!session) return;
 
   clearTimeout(session.timeout);
   const timeout = setTimeout(
-    async () => {
-      const current = gameMap.get(id);
-      if (current) {
-        try {
-          await current.browser.close();
-        } catch (err) {
-          console.error(`Failed to close browser for ${id}`, err);
-        }
-        gameMap.delete(id);
-        console.log(`Session ${id} cleaned up due to inactivity.`);
-      }
-    },
+    () => cleanupSession(id, 'inactivity'),
     5 * 60 * 1000
-  ); // 5 menit
+  );
 
   session.timeout = timeout;
 };
@@ -44,11 +58,16 @@ export const startSessionAkinator = async (
   childMode: boolean = false
 ): Promise<{ id: string; question: string | null }> => {
   let browser: ConnectResult['browser'] | null = null;
+  let page: ConnectResult['page'] | null = null;
+  const id = uuid();
+
   try {
-    const { page, browser: puppeteerBrowser } = await connect({
+    const connectResult = await connect({
       headless: false,
     });
-    browser = puppeteerBrowser;
+
+    browser = connectResult.browser;
+    page = connectResult.page;
 
     const [lang, theme] = region.split('_');
     const baseUrl = `https://${lang}.akinator.com`;
@@ -68,7 +87,7 @@ export const startSessionAkinator = async (
     if (action === '/theme-selection') {
       // @ts-ignore
       const themeId: number = themes[theme] ?? 1;
-      await sleep(1000);
+      await sleep(2000);
       await page.waitForFunction(
         () => typeof (window as any).chooseTheme === 'function'
       );
@@ -77,8 +96,7 @@ export const startSessionAkinator = async (
       }, themeId);
     }
 
-    const id = uuid();
-    await sleep(1000);
+    await sleep(2500);
     await page.waitForSelector('#question-label');
     const question = await page.evaluate(() => {
       const el = document.querySelector('#question-label');
@@ -86,23 +104,21 @@ export const startSessionAkinator = async (
     });
 
     const timeout = setTimeout(
-      async () => {
-        try {
-          await browser!.close();
-        } catch (err) {
-          console.error(`Failed to close browser for ${id}`, err);
-        }
-        gameMap.delete(id);
-        console.log(`Session ${id} cleaned up due to inactivity.`);
-      },
+      () => cleanupSession(id, 'inactivity'),
       5 * 60 * 1000
-    ); // 5 menit
+    );
 
     gameMap.set(id, { page, browser, question, timeout });
+
     browser = null;
+    page = null;
+
     return { id, question };
   } catch (error) {
-    if (browser) await browser.close();
+    console.error(`Error starting session ${id}:`, error);
+    if (browser) {
+      await safeBrowserClose(browser, id);
+    }
     throw error;
   }
 };
@@ -111,20 +127,25 @@ export const answerAkinator = async (
   id: string,
   akinatorAnswer: number
 ): Promise<object | null> => {
-  let browser: ConnectResult['browser'] | null = null;
   if (!gameMap.has(id)) throw new Error('Session not found');
-  try {
-    const { page, browser: puppeteerBrowser } = gameMap.get(id)!;
-    browser = puppeteerBrowser;
 
+  const session = gameMap.get(id)!;
+  const { page, browser } = session;
+
+  try {
     setAutoCleanup(id);
 
-    const result = await new Promise<object | null>((resolve) => {
+    const result = await new Promise<object | null>((resolve, reject) => {
       const responseHandler = async (response: any) => {
-        if (response.url().includes('/answer')) {
-          const body = await response.json();
+        try {
+          if (response.url().includes('/answer')) {
+            const body = await response.json();
+            page.off('response', responseHandler);
+            resolve(body);
+          }
+        } catch (err) {
           page.off('response', responseHandler);
-          resolve(body);
+          reject(err);
         }
       };
 
@@ -139,15 +160,21 @@ export const answerAkinator = async (
             (window as any).chooseAnswer(data);
           }, akinatorAnswer)
         )
-        .catch(() => {
+        .catch((err) => {
           page.off('response', responseHandler);
-          resolve(null);
+          reject(err);
         });
     });
 
+    if (result && typeof result === 'object' && 'id_proposition' in result) {
+      console.log(`Game finished for session ${id}, Akinator made a guess`);
+      await cleanupSession(id, 'game finished');
+    }
+
     return result;
   } catch (error) {
-    if (browser) await browser.close();
+    console.error(`Error answering akinator for session ${id}:`, error);
+    await cleanupSession(id, 'error in answerAkinator');
     throw error;
   }
 };
@@ -155,20 +182,25 @@ export const answerAkinator = async (
 export const cancelAnswerAkinator = async (
   id: string
 ): Promise<object | null> => {
-  let browser: ConnectResult['browser'] | null = null;
   if (!gameMap.has(id)) throw new Error('Session not found');
+
+  const session = gameMap.get(id)!;
+  const { page, browser } = session;
+
   try {
-    const { page, browser: puppeteerBrowser } = gameMap.get(id)!;
-    browser = puppeteerBrowser;
+    setAutoCleanup(id);
 
-    setAutoCleanup(id); // reset timeout karena ada aktivitas
-
-    const result = await new Promise<object | null>((resolve) => {
+    const result = await new Promise<object | null>((resolve, reject) => {
       const responseHandler = async (response: any) => {
-        if (response.url().includes('/cancel_answer')) {
-          const body = await response.json();
+        try {
+          if (response.url().includes('/cancel_answer')) {
+            const body = await response.json();
+            page.off('response', responseHandler);
+            resolve(body);
+          }
+        } catch (err) {
           page.off('response', responseHandler);
-          resolve(body);
+          reject(err);
         }
       };
 
@@ -183,31 +215,55 @@ export const cancelAnswerAkinator = async (
             (window as any).cancelAnswer();
           })
         )
-        .catch(() => {
+        .catch((err) => {
           page.off('response', responseHandler);
-          resolve(null);
+          reject(err);
         });
     });
 
     return result;
   } catch (error) {
-    if (browser) await browser.close();
+    console.error(`Error canceling answer for session ${id}:`, error);
+    await cleanupSession(id, 'error in cancelAnswerAkinator');
     throw error;
   }
 };
 
 export const endSessionAkinator = async (id: string): Promise<void> => {
-  const session = gameMap.get(id);
-  if (!session) throw new Error('Session not found');
-
-  clearTimeout(session.timeout);
-
-  try {
-    await session.browser.close();
-  } catch (err) {
-    console.error(`Error closing browser for ${id}`, err);
-  }
-
-  gameMap.delete(id);
-  console.log(`Session ${id} ended manually.`);
+  if (!gameMap.has(id)) throw new Error('Session not found');
+  await cleanupSession(id, 'manual end');
 };
+
+export const cleanupAllSessions = async (): Promise<void> => {
+  const sessionIds = Array.from(gameMap.keys());
+  const cleanupPromises = sessionIds.map((id) =>
+    cleanupSession(id, 'application shutdown')
+  );
+
+  await Promise.all(cleanupPromises);
+  console.log('All sessions cleaned up');
+};
+
+process.on('SIGINT', async () => {
+  console.log('Received SIGINT, cleaning up sessions...');
+  await cleanupAllSessions();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('Received SIGTERM, cleaning up sessions...');
+  await cleanupAllSessions();
+  process.exit(0);
+});
+
+process.on('uncaughtException', async (err) => {
+  console.error('Uncaught Exception:', err);
+  await cleanupAllSessions();
+  process.exit(1);
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  await cleanupAllSessions();
+  process.exit(1);
+});

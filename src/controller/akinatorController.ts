@@ -12,7 +12,7 @@ export class AkinatorController {
   async start(req: Request, res: Response) {
     try {
       const region = req.query.region as region;
-      const childMode = Boolean(req.query.child_mode);
+      const childMode = req.query.child_mode == 'true';
 
       const akinator = await startSessionAkinator(region, childMode);
       const response: ApiResponse = {

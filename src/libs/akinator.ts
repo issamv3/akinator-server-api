@@ -1,7 +1,6 @@
 import { chromium, Browser, Page } from 'playwright';
 import { v4 as uuid } from 'uuid';
-
-import { region, themes } from '../constants';
+import { region, themes, ThemeType } from '../constants';
 
 type GameSession = {
   browser: Browser;
@@ -68,8 +67,8 @@ export const startSessionAkinator = async (
     page = await browser.newPage();
 
     const parts = region.split('_');
-const lang = parts[0];
-const theme = parts[1] ?? '';
+    const lang = parts[0];
+    const theme = parts[1] as ThemeType || 'characters';
     const baseUrl = `https://${lang}.akinator.com`;
 
     await page.goto(baseUrl);
@@ -83,7 +82,7 @@ const theme = parts[1] ?? '';
     await page.click('.btn-play > a');
 
     if (action === '/theme-selection') {
-      const themeId: number = themes[theme] ?? 1;
+      const themeId: number = themes[theme];
       await sleep(2000);
       await page.waitForFunction(() => typeof (window as any).chooseTheme === 'function');
       await page.evaluate((data) => {

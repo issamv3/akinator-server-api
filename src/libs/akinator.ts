@@ -67,7 +67,9 @@ export const startSessionAkinator = async (
     browser = await chromium.launch({ headless: false });
     page = await browser.newPage();
 
-    const [lang, theme] = region.split('_');
+    const parts = region.split('_');
+const lang = parts[0];
+const theme = parts[1] ?? '';
     const baseUrl = `https://${lang}.akinator.com`;
 
     await page.goto(baseUrl);

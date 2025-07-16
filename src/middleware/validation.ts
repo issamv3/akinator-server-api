@@ -1,5 +1,4 @@
 import { NextFunction, Request, Response } from 'express';
-
 import { ApiResponse } from '../types/express';
 
 export const validateStartAkinator = (

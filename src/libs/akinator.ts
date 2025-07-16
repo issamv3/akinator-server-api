@@ -1,9 +1,11 @@
-import { connect, ConnectResult } from 'puppeteer-real-browser';
+import { chromium, Browser, Page } from 'playwright';
 import { v4 as uuid } from 'uuid';
 
 import { region, themes } from '../constants';
 
-type GameSession = ConnectResult & {
+type GameSession = {
+  browser: Browser;
+  page: Page;
   question: string | null;
   timeout: NodeJS.Timeout;
 };
@@ -15,15 +17,15 @@ export const sleep = (ms: number): Promise<void> => {
 };
 
 const safeBrowserClose = async (
-  browser: ConnectResult['browser'],
+  browser: Browser,
   sessionId: string
 ) => {
   try {
-    if (browser && !browser.isConnected()) {
+    if (!browser.isConnected()) {
       console.log(`Browser for session ${sessionId} already disconnected`);
       return;
     }
-    await browser?.close();
+    await browser.close();
     console.log(`Browser for session ${sessionId} closed successfully`);
   } catch (err) {
     console.error(`Failed to close browser for session ${sessionId}:`, err);
@@ -57,17 +59,13 @@ export const startSessionAkinator = async (
   region: region,
   childMode: boolean = false
 ): Promise<{ id: string; question: string | null }> => {
-  let browser: ConnectResult['browser'] | null = null;
-  let page: ConnectResult['page'] | null = null;
+  let browser: Browser | null = null;
+  let page: Page | null = null;
   const id = uuid();
 
   try {
-    const connectResult = await connect({
-      headless: false,
-    });
-
-    browser = connectResult.browser;
-    page = connectResult.page;
+    browser = await chromium.launch({ headless: false });
+    page = await browser.newPage();
 
     const [lang, theme] = region.split('_');
     const baseUrl = `https://${lang}.akinator.com`;
@@ -78,19 +76,14 @@ export const startSessionAkinator = async (
       await page.click('#labelChildFilter');
     }
 
-    const action = await page.$eval('#formTheme', (el) =>
-      el.getAttribute('action')
-    );
+    const action = await page.getAttribute('#formTheme', 'action');
 
     await page.click('.btn-play > a');
 
     if (action === '/theme-selection') {
-      // @ts-ignore
       const themeId: number = themes[theme] ?? 1;
       await sleep(2000);
-      await page.waitForFunction(
-        () => typeof (window as any).chooseTheme === 'function'
-      );
+      await page.waitForFunction(() => typeof (window as any).chooseTheme === 'function');
       await page.evaluate((data) => {
         (window as any).chooseTheme(`${data}`);
       }, themeId);
@@ -135,36 +128,15 @@ export const answerAkinator = async (
   try {
     setAutoCleanup(id);
 
-    const result = await new Promise<object | null>((resolve, reject) => {
-      const responseHandler = async (response: any) => {
-        try {
-          if (response.url().includes('/answer')) {
-            const body = await response.json();
-            page.off('response', responseHandler);
-            resolve(body);
-          }
-        } catch (err) {
-          page.off('response', responseHandler);
-          reject(err);
-        }
-      };
+    const [response] = await Promise.all([
+      page.waitForResponse((response) => response.url().includes('/answer'), { timeout: 7000 }),
+      page.waitForFunction(() => typeof (window as any).chooseAnswer === 'function')
+        .then(() => page.evaluate((data) => {
+          (window as any).chooseAnswer(data);
+        }, akinatorAnswer))
+    ]);
 
-      page.on('response', responseHandler);
-
-      page
-        .waitForFunction(
-          () => typeof (window as any).chooseAnswer === 'function'
-        )
-        .then(() =>
-          page.evaluate((data) => {
-            (window as any).chooseAnswer(data);
-          }, akinatorAnswer)
-        )
-        .catch((err) => {
-          page.off('response', responseHandler);
-          reject(err);
-        });
-    });
+    const result = await response.json();
 
     if (result && typeof result === 'object' && 'id_proposition' in result) {
       console.log(`Game finished for session ${id}, Akinator made a guess`);
@@ -190,36 +162,15 @@ export const cancelAnswerAkinator = async (
   try {
     setAutoCleanup(id);
 
-    const result = await new Promise<object | null>((resolve, reject) => {
-      const responseHandler = async (response: any) => {
-        try {
-          if (response.url().includes('/cancel_answer')) {
-            const body = await response.json();
-            page.off('response', responseHandler);
-            resolve(body);
-          }
-        } catch (err) {
-          page.off('response', responseHandler);
-          reject(err);
-        }
-      };
+    const [response] = await Promise.all([
+      page.waitForResponse((response) => response.url().includes('/cancel_answer'), { timeout: 7000 }),
+      page.waitForFunction(() => typeof (window as any).cancelAnswer === 'function')
+        .then(() => page.evaluate(() => {
+          (window as any).cancelAnswer();
+        }))
+    ]);
 
-      page.on('response', responseHandler);
-
-      page
-        .waitForFunction(
-          () => typeof (window as any).cancelAnswer === 'function'
-        )
-        .then(() =>
-          page.evaluate(() => {
-            (window as any).cancelAnswer();
-          })
-        )
-        .catch((err) => {
-          page.off('response', responseHandler);
-          reject(err);
-        });
-    });
+    const result = await response.json();
 
     return result;
   } catch (error) {

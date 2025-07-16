@@ -33,6 +33,7 @@
     "helmet": "^8.1.0",
     "morgan": "^1.10.0",
     "puppeteer-real-browser": "^1.4.2",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "@playwright/test": "^1.54.1"
   }
 }

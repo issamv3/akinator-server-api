@@ -1,5 +1,4 @@
 import { Router } from 'express';
-
 import akinatorController from '../controller/akinatorController';
 import {
   validateAnswerAkinator,

@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-
 import { region } from '../constants';
 import {
   answerAkinator,

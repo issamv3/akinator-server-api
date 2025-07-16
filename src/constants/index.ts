@@ -27,7 +27,9 @@ export const regions = [
 
 export type region = (typeof regions)[number];
 
-export const themes = {
+export type ThemeType = 'characters' | 'objects' | 'animals';
+
+export const themes: Record<ThemeType, number> = {
   characters: 1,
   objects: 2,
   animals: 14,
